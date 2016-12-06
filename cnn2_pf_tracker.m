@@ -1,6 +1,10 @@
 function  position = cnn2_pf_tracker(tracker_param)
 
 load_tracker_param;
+
+fprintf(['track_res/' tracker_param.seq_name '.position.mat']);
+
+
 caffe('presolve_gnet');
 caffe('presolve_snet');
 %% read images
@@ -18,6 +22,7 @@ roi1 = ext_roi(im1, location, [0, 0],  roi_size, s1);
 figure(1)
 imshow(mat2gray(roi1));
 %% preprocess roi
+fprintf('-- preprocessing roi --\n')
 roi1 = impreprocess(roi1);
 fea1 = caffe('forward', {single(roi1)});
 % ch_num = size(fea1,3);
@@ -33,36 +38,43 @@ map1 =  GetMap(size(im1), fea_sz, roi_size, location, [0, 0], s1, 'gaussian');
 conf_store = 0;
 
 %% select
+fprintf('-- Select phase --\n');
 caffe('set_phase_train');
 for i=1:max_iter_select
-s_pre_map = caffe('forward_snet', {lfea1});
-s_pre_map = s_pre_map{1};
-figure(1011); subplot(1,2,1); imagesc(permute(s_pre_map,[2,1,3]));
-s_diff = s_pre_map-permute(single(map1), [2,1,3]);
-caffe('backward_snet', {single(s_diff)});
-caffe('update_snet');
+    s_pre_map = caffe('forward_snet', {lfea1});
+    s_pre_map = s_pre_map{1};
+    figure(1011); subplot(1,2,1); imagesc(permute(s_pre_map,[2,1,3]));
+    s_diff = s_pre_map-permute(single(map1), [2,1,3]);
+    caffe('backward_snet', {single(s_diff)});
+    caffe('update_snet');
 
-g_pre_map = caffe('forward_gnet', {gfea1});
-g_pre_map = g_pre_map{1};
-figure(1011); subplot(1,2,2); imagesc(permute(g_pre_map,[2,1,3]));
-g_diff = g_pre_map-permute(single(map1), [2,1,3]);
-caffe('backward_gnet', {single(g_diff)});
-caffe('update_gnet');
-fprintf('Iteration %03d/%03d, Local Loss %f, Global Loss %f\n', i, max_iter, sum(abs(s_diff(:))), sum(abs(g_diff(:))));
+    g_pre_map = caffe('forward_gnet', {gfea1});
+    g_pre_map = g_pre_map{1};
+    figure(1011); subplot(1,2,2); imagesc(permute(g_pre_map,[2,1,3]));
+    g_diff = g_pre_map-permute(single(map1), [2,1,3]);
+    caffe('backward_gnet', {single(g_diff)});
+    caffe('update_gnet');
+    fprintf('Iteration %03d/%03d, Local Loss %f, Global Loss %f\n', i, max_iter_select, sum(abs(s_diff(:))), sum(abs(g_diff(:))));
 end
 
-
+fprintf('-- Compute saliency --\n');
 [~, lid] = compute_saliency({lfea1}, map1, 'ssolver');
 [~, gid] = compute_saliency({gfea1}, map1, 'gsolver');
 
 lid = lid(1:ch_num);
 gid = gid(1:ch_num);
 
+save(['track_res/' tracker_param.seq_name '.channels.mat'], 'lid', 'gid');
+
+
 lfea1 = lfea1(:,:,lid);
 gfea1 = gfea1(:,:,gid);
 fea2_store = lfea1;
 map2_store = map1;
+
 %% train
+switch_pu('cpu');
+fprintf('-- Train solver --\n');
 caffe('init_ssolver', snet_solver_def_file);
 caffe('init_gsolver', gnet_solver_def_file);
 caffe('set_phase_train');
@@ -88,6 +100,7 @@ end
 t=0;
 
 position = zeros(6, fnum);
+rects = zeros(4, fnum);
 best_geo_param = loc2affgeo(location, pf_param.p_sz);
 for im2_id = im1_id:fnum
     s_distractor = false;
@@ -198,6 +211,7 @@ for im2_id = im1_id:fnum
     
 
     drawresult(im2_id, mat2gray(im2), [pf_param.p_sz, pf_param.p_sz], affparam2mat(best_geo_param));
+    rects(:, im2_id) = location;
     position(:, im2_id) = best_geo_param;
     mask = mat2gray(imresize(pre_map, [roi_size, roi_size]));
     pred = grs2rgb(floor(mask*255),jet);
@@ -216,6 +230,7 @@ for im2_id = im1_id:fnum
 
         
         if conf_store>pf_param.up_thr && mod(im2_id,20) == 0 % && ~l_distractor_store
+            fprintf('- Retrain SNET case 1 -\n');
             caffe('set_phase_train');
             caffe('reshape_input', 'ssolver', [0, 2, length(lid), fea_sz(2), fea_sz(1)]);
             fea2_train{1}(:,:,:,1) = lfea1;
@@ -231,6 +246,7 @@ for im2_id = im1_id:fnum
         end
         
             if s_distractor && maxconf> pf_param.up_thr
+                fprintf('- Retrain SNET case 2 -\n');
                 caffe('set_phase_train');
                 caffe('reshape_input', 'ssolver', [0, 2,length(lid), fea_sz(2), fea_sz(1)]);
                 lfea2_train(:,:,:,1) = fea2_store;
@@ -258,7 +274,11 @@ for im2_id = im1_id:fnum
     end
     
 end
-% save([track_res '/position.mat'], 'position');
+
+save(['track_res/' tracker_param.seq_name '.position.mat'], 'position', 'rects');
+%save(['track_res/' tracker_param.seq_name '.rects.mat'], 'rects');
+
+%save(['track_res/' seq_name '/position.mat'], 'position');
 end
 
 

@@ -8,6 +8,7 @@ if ~isdir(seq_path)
     error('Sequence %s does not exist!', seq_name);
 end
 tracker_param.seq_path = seq_path;
+tracker_param.seq_name = seq_name;
 try
     GT = load([seq_path 'groundtruth_rect.txt']);
 catch
